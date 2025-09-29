@@ -1,1 +1,113 @@
+% Minimal core style that wraps your rich tcolorbox environments
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{notes-core}[2025/09/29 Core wrapper style]
+
+% --- encodings ---
+\RequirePackage[T1]{fontenc}
+\RequirePackage[utf8]{inputenc} % ok для pdflatex; при lualatex/xelatex можно убрать
+\RequirePackage{lmodern}
+
+% --- math ---
+\RequirePackage{amsmath,amssymb,amsthm,mathtools}
+\numberwithin{equation}{section}
+
+% --- graphics & floats ---
+\RequirePackage{graphicx}
+\graphicspath{{./images/}} % keep your path
+\RequirePackage{float}
+
+% --- colors & links ---
+\RequirePackage{xcolor}
+\definecolor{primaryColor}{HTML}{1F4E79}
+\definecolor{secondaryColor}{HTML}{00796B}
+\definecolor{accentColor}{HTML}{C2185B}
+\definecolor{noteColor}{HTML}{1976D2}
+\definecolor{questionColor}{HTML}{5D4037}
+\RequirePackage[hidelinks]{hyperref}
+
+% --- cleveref (по желанию, но очень удобно) ---
+\RequirePackage[nameinlink,capitalize]{cleveref}
+
+% --- tcolorbox + theorem boxes ---
+\RequirePackage[most]{tcolorbox}
+\tcbuselibrary{theorems}
+
+% === Recreate (lightweight) your theorem boxes ===
+% Если названия или цвета отличаются от твоих — поправим.
+\newtcbtheorem[auto counter, number within=section]{definitionbox}{Definition}{
+  colbacktitle=secondaryColor, coltitle=white
+}{def}
+
+\newtcbtheorem[auto counter, number within=section]{theoremnox}{Theorem}{
+  colbacktitle=accentColor, coltitle=white
+}{thm}
+
+\newtcbtheorem[auto counter, number within=section]{lemmanox}{Lemma}{
+  colbacktitle=accentColor!80!black, coltitle=white
+}{lem}
+
+\newtcbtheorem[auto counter, number within=section]{corollarybox}{Corollary}{
+  colbacktitle=accentColor!60!black, coltitle=white
+}{cor}
+
+\newtcbtheorem[auto counter, number within=section]{examplebox}{Example}{
+  colbacktitle=primaryColor, coltitle=white
+}{ex}
+
+\newtcbtheorem[auto counter, number within=section]{notebox}{Note}{
+  colbacktitle=noteColor, coltitle=white
+}{note}
+
+\newtcbtheorem[auto counter, number within=section]{questionbox}{Question}{
+  colbacktitle=questionColor, coltitle=white
+}{q}
+
+% Аккуратный бокс "доказательство" (если любишь \proofbox)
+\newtcolorbox{proofbox}{
+  colback=white, boxrule=0.5pt,
+  borderline west={2mm}{0pt}{noteColor!70!white},
+  sharp corners, enhanced,
+  title={\bfseries Proof}, after={\hfill\ensuremath{\blacksquare}}
+}
+
+% === Thin wrappers for the agent ===
+% Агент пишет привычные окружения, а мы заворачиваем в твои боксы.
+\RequirePackage{xparse}
+
+\NewDocumentEnvironment{definition}{O{}}
+  {\begin{definitionbox}{#1}}
+  {\end{definitionbox}}
+
+\NewDocumentEnvironment{theorem}{O{}}
+  {\begin{theoremnox}{#1}}
+  {\end{theoremnox}}
+
+\NewDocumentEnvironment{lemma}{O{}}
+  {\begin{lemmanox}{#1}}
+  {\end{lemmanox}}
+
+\NewDocumentEnvironment{corollary}{O{}}
+  {\begin{corollarybox}{#1}}
+  {\end{corollarybox}}
+
+\NewDocumentEnvironment{example}{O{}}
+  {\begin{examplebox}{#1}}
+  {\end{examplebox}}
+
+\NewDocumentEnvironment{noteenv}{O{}}
+  {\begin{notebox}{#1}}
+  {\end{notebox}}
+
+\NewDocumentEnvironment{question}{O{}}
+  {\begin{questionbox}{#1}}
+  {\end{questionbox}}
+
+% Привычный proof -> твой красивый бокс
+\RenewDocumentEnvironment{proof}{}{\begin{proofbox}}{\end{proofbox}}
+
+% Удобные шорткаты ссылок
+\newcommand{\figref}[1]{\cref{#1}}
+\newcommand{\eqnref}[1]{\cref{#1}}
+\newcommand{\thmref}[1]{\cref{#1}}
+\newcommand{\defref}[1]{\cref{#1}}
 
