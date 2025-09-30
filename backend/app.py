@@ -46,7 +46,7 @@ E = mc^2
 
     # 6. Копируем шаблонные файлы (main-template.tex и notes.sty)
     shutil.copy("backend/latex/main-template.tex", os.path.join(job_dir, "main-template.tex"))
-    shutil.copy("backend/latex/notes.sty", os.path.join(job_dir, "notes.sty"))
+    shutil.copy("backend/latex/notes-core.sty", os.path.join(job_dir, "notes-core.sty"))
 
     # 7. Упаковываем в ZIP
     zip_path = os.path.join(JOBS_DIR, f"{job_id}.zip")
