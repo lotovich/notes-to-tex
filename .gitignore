@@ -6,9 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# Local results
-jobs/
-
 # Distribution / packaging
 .Python
 build/

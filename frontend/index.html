@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>notes-to-tex — Demo</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+      .card { border: 1px solid #ddd; border-radius: 12px; padding: 18px; }
+      .row { display: flex; align-items: center; gap: 8px; }
+      button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; cursor: pointer; }
+      #log { white-space: pre-wrap; background: #fafafa; padding: 12px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>notes-to-tex — PDF → LaTeX</h1>
+    <p>Upload a PDF. The API extracts text/figures and returns a ZIP with <code>content.tex</code> + templates.</p>
+    <div class="card">
+      <input id="file" type="file" accept="application/pdf" />
+      <button id="go">Process</button>
+      <div id="log"></div>
+    </div>
+
+    <script>
+      const $ = (s)=>document.querySelector(s);
+      $("#go").onclick = async ()=>{
+        const f = $("#file").files[0];
+        const log = $("#log");
+        if(!f){ log.textContent = "Choose a PDF first."; return; }
+        const fd = new FormData();
+        fd.append("file", f);
+        log.textContent = "Uploading…";
+        const r = await fetch("/process", { method: "POST", body: fd });
+        const data = await r.json();
+        if(data.download_url){
+          log.innerHTML = "Done. <a href='"+data.download_url+"'>Download ZIP</a>";
+        }else{
+          log.textContent = JSON.stringify(data, null, 2);
+        }
+      };
+    </script>
+  </body>
+</html>

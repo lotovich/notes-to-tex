@@ -30,45 +30,101 @@
 
 % --- tcolorbox + theorem boxes ---
 \RequirePackage[most]{tcolorbox}
-\tcbuselibrary{theorems}
+\tcbuselibrary{theorems,skins,breakable}
 
-% === Recreate (lightweight) your theorem boxes ===
-% Если названия или цвета отличаются от твоих — поправим.
+% Общие настройки: белый фон, переносы, жирный заголовок.
+% КЛЮЧЕВОЕ: before upper=\ignorespaces — не "съедает" первую букву,
+% и не ломает заголовки (в фигурных скобках).
+\tcbset{
+  mytheobox/.style={
+    enhanced, breakable,
+    colback=white,
+    fonttitle=\bfseries,
+    before upper=\ignorespaces
+  }
+}
+
+% === Definition ===
 \newtcbtheorem[auto counter, number within=section]{definitionbox}{Definition}{
+  mytheobox,
+  colframe=secondaryColor!80!black,
   colbacktitle=secondaryColor, coltitle=white
 }{def}
 
+% === Theorem ===
 \newtcbtheorem[auto counter, number within=section]{theoremnox}{Theorem}{
+  mytheobox,
+  colframe=accentColor!80!black,
   colbacktitle=accentColor, coltitle=white
 }{thm}
 
+% === Lemma ===
 \newtcbtheorem[auto counter, number within=section]{lemmanox}{Lemma}{
+  mytheobox,
+  colframe=accentColor!80!black,
   colbacktitle=accentColor!80!black, coltitle=white
 }{lem}
 
+% === Corollary ===
 \newtcbtheorem[auto counter, number within=section]{corollarybox}{Corollary}{
+  mytheobox,
+  colframe=accentColor!60!black,
   colbacktitle=accentColor!60!black, coltitle=white
 }{cor}
 
+% === Example ===
 \newtcbtheorem[auto counter, number within=section]{examplebox}{Example}{
+  mytheobox,
+  colframe=primaryColor!80!black,
   colbacktitle=primaryColor, coltitle=white
 }{ex}
 
+% === Note ===
 \newtcbtheorem[auto counter, number within=section]{notebox}{Note}{
+  mytheobox,
+  colframe=noteColor!80!black,
   colbacktitle=noteColor, coltitle=white
 }{note}
 
+% === Question ===
 \newtcbtheorem[auto counter, number within=section]{questionbox}{Question}{
+  mytheobox,
+  colframe=questionColor!80!black,
   colbacktitle=questionColor, coltitle=white
 }{q}
 
-% Аккуратный бокс "доказательство" (если любишь \proofbox)
+% --- Proof box ---
 \newtcolorbox{proofbox}{
+  enhanced, breakable,
   colback=white, boxrule=0.5pt,
   borderline west={2mm}{0pt}{noteColor!70!white},
-  sharp corners, enhanced,
-  title={\bfseries Proof}, after={\hfill\ensuremath{\blacksquare}}
+  sharp corners,
+  title={\bfseries Proof},
+  before upper=\ignorespaces,
+  after={\hfill\ensuremath{\blacksquare}}
 }
+
+% === Aliases: короткие имена для тех же боксов ===
+\let\definition\definitionbox
+\let\enddefinition\enddefinitionbox
+
+\let\theorem\theoremnox
+\let\endtheorem\endtheoremnox
+
+\let\lemma\lemmanox
+\let\endlemma\endlemmanox
+
+\let\corollary\corollarybox
+\let\endcorollary\endcorollarybox
+
+\let\example\examplebox
+\let\endexample\endexamplebox
+
+\let\note\notebox
+\let\endnote\endnotebox
+
+\let\question\questionbox
+\let\endquestion\endquestionbox
 
 % === Thin wrappers for the agent ===
 % Агент пишет привычные окружения, а мы заворачиваем в твои боксы.
@@ -110,4 +166,3 @@
 \newcommand{\eqnref}[1]{\cref{#1}}
 \newcommand{\thmref}[1]{\cref{#1}}
 \newcommand{\defref}[1]{\cref{#1}}
-
