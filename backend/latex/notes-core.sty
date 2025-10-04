@@ -3,9 +3,19 @@
 \ProvidesPackage{notes-core}[2025/09/29 Core wrapper style]
 
 % --- encodings ---
-\RequirePackage[T1]{fontenc}
-\RequirePackage[utf8]{inputenc} % ok для pdflatex; при lualatex/xelatex можно убрать
-\RequirePackage{lmodern}
+\RequirePackage{iftex}
+\ifPDFTeX
+  \RequirePackage[utf8]{inputenc} % ok для pdflatex
+  \RequirePackage[T2A,T1]{fontenc}
+  \RequirePackage{tempora} % Times-like family с кириллицей, поддерживает жирный/курсив
+\else
+  \RequirePackage{fontspec}
+  \defaultfontfeatures{Ligatures=TeX}
+  \setmainfont{Times New Roman}
+  \setsansfont{Arial}
+  \setmonofont{Courier New}
+\fi
+\RequirePackage[english,russian]{babel}
 
 % --- math ---
 \RequirePackage{amsmath,amssymb,amsthm,mathtools}
@@ -135,6 +145,11 @@
   {\end{definitionbox}}
 
 \NewDocumentEnvironment{theorem}{O{}}
+  {\begin{theoremnox}{#1}}
+  {\end{theoremnox}}
+
+% theorembox — alias (модель иногда использует это имя)
+\NewDocumentEnvironment{theorembox}{O{}}
   {\begin{theoremnox}{#1}}
   {\end{theoremnox}}
 

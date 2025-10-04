@@ -2,11 +2,15 @@
 from fastapi import FastAPI, UploadFile, Request, Query
 from fastapi.responses import FileResponse
 from pathlib import Path
-import os, shutil, uuid, zipfile, subprocess
+import os, shutil, uuid, zipfile, subprocess, re
 import fitz  # PyMuPDF
+import json
 
 from backend.gemini_client import compose_latex, editor_review
 from backend.utils.postprocess import enforce_latex_conventions
+from backend.utils.pdf import pdf_to_images
+from backend.utils.validators import run_validators
+
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "latex"
@@ -16,6 +20,31 @@ JOBS_DIR.mkdir(exist_ok=True)
 app = FastAPI(title="notes-to-tex")
 
 # ---------- PDF helpers ----------
+_INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics\s*\[", re.I)
+
+def ensure_figure_blocks(latex_body: str, figures: list[dict]) -> str:
+    if not figures:
+        return latex_body
+    if _INCLUDEGRAPHICS_RE.search(latex_body):
+        return latex_body
+
+    appended = "\n\n% === Auto-inserted figures ===\n"
+    for f in figures:
+        path = f.get("filename") or f.get("path")
+        if not path:
+            continue
+        caption = (
+            f"Auto-inserted figure from page {f.get('page')}"
+            if f.get("page") else "Auto-inserted figure"
+        )
+        appended += (
+            "\\begin{figure}[h]\n"
+            "\\centering\n"
+            f"\\includegraphics[width=0.8\\textwidth]{{{path}}}\n"
+            f"\\caption{{{caption}}}\n"
+            "\\end{figure}\n\n"
+        )
+    return latex_body + appended
 
 def extract_text_blocks_pdf(pdf_path: Path) -> list[str]:
     blocks = []
@@ -27,10 +56,6 @@ def extract_text_blocks_pdf(pdf_path: Path) -> list[str]:
     return blocks
 
 def extract_images_pdf(pdf_path: Path, out_dir: Path) -> list[dict]:
-    """
-    Извлекает все встроенные изображения как PNG в out_dir/figures.
-    Возвращает [{filename, page, w, h}, ...]
-    """
     figures_dir = out_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,6 +127,13 @@ async def process(
     with open(input_path, "wb") as f:
         f.write(await file.read())
 
+    images = []
+    if input_path.suffix.lower() == ".pdf":
+        try:
+            images = pdf_to_images(str(input_path), dpi=220, max_pages=100)
+        except Exception:
+            images = []
+
     # 3) extract text + images
     text_blocks: list[str] = []
     figures_info: list[dict] = []
@@ -115,29 +147,61 @@ async def process(
             figures_info = extract_images_pdf(input_path, job_dir)
         except Exception:
             figures_info = []
+    elif input_path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
+        # Складываем исходную картинку в job_dir/figures и объявляем её как figure
+        fig_dir = job_dir / "figures"
+        fig_dir.mkdir(exist_ok=True)
+        target = fig_dir / input_path.name
+        shutil.move(str(input_path), str(target))
 
-    if not text_blocks:
+        images = [target]
+
+        figures_info = []  # Для одиночных страниц не считаем их "фигурами" — нужно распознать текст
+        # Минимальный текстовый блок-подсказка модели
+        text_blocks = [f"Handwritten page image: {target.name}. Extract and convert to LaTeX."]
+
+    if not text_blocks or all(not b.strip() for b in text_blocks):
         text_blocks = [f"Input file: {file.filename}. No text extracted at this stage."]
 
     # 4) compose via Gemini
-    latex_body = compose_latex(text_blocks=text_blocks, figures=figures_info, mode=mode)
+    meta_path = job_dir / "meta.json"
+
+    latex_body = compose_latex(
+        text_blocks=text_blocks,
+        figures=figures_info,    # теперь даём реальные метаданные вытянутых картинок
+        mode=mode,
+        images=images,           # Передаём в модель байты страниц/изображений
+        meta_out_path=meta_path,
+        job_dir=job_dir
+    )
+
     latex_body = enforce_latex_conventions(latex_body)  # << постпроцессор
-    
+
+    # прочитать meta.json
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+
+    latex_body, val_report = run_validators(latex_body, meta)
+
     # 5) optional editor pass
     if use_editor:
-        latex_body = editor_review(latex_body)
+        latex_body = editor_review(latex_body, job_dir=job_dir)
+
+    latex_body = ensure_figure_blocks(latex_body, figures_info)
 
     # 6) write content.tex
     (job_dir / "content.tex").write_text(latex_body, encoding="utf-8")
 
     # 7) copy templates
-    # Вариант с notes-core.sty (как ты хотел)
+    # Вариант с notes-core.sty
     src_main = TEMPLATES_DIR / "main-template.tex"
     assert src_main.exists(), f"main-template.tex not found at {src_main}"
     shutil.copy(src_main, job_dir / "main-template.tex")
 
-    # Копируем стиль (любой, что у тебя есть)
-    # Если у тебя notes-core.sty — копируем его. Если добавишь shim notes.sty — можно копировать оба.
     src_core = TEMPLATES_DIR / "notes-core.sty"
     if src_core.exists():
         shutil.copy(src_core, job_dir / "notes-core.sty")

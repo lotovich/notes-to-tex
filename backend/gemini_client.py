@@ -1,23 +1,23 @@
 # backend/gemini_client.py
 import os, re, json
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Union
 from google import genai
+from google.genai import types as genai_types
 from dotenv import load_dotenv
+import base64
 
 # Загружаем .env из корня проекта
 load_dotenv()
 
 PROMPTS_DIR = (Path(__file__).resolve().parent / "prompts")
-
-# В твоём репо должны быть:
-#  - prompts/composer.md  (универсальный "книжный" сборщик LaTeX)
-#  - prompts/editor.md    (второй проход: правки/вычитка)
 COMPOSER_FILE = PROMPTS_DIR / "composer.md"
 EDITOR_FILE   = PROMPTS_DIR / "editor.md"
 
 # Вырезаем содержимое из ```latex ... ``` или ```tex ... ```
-_CODE_FENCE = re.compile(r"```(?:latex|tex)?\s*(.*?)```", re.S | re.I)
+_CODE_FENCE = re.compile(r"```\s*(.*?)```", re.S | re.I)
+_LATEX_FENCE = re.compile(r"```(?:latex|tex)\s*(.*?)```", re.S | re.I)
+_META_FENCE = re.compile(r"```json\s*META\s*(\{[\s\S]*?\})\s*```", re.I)
 
 # Удаляем прелюдию/доккласс, если модель вдруг их вернула
 _REMOVE_PREAMBLE = re.compile(
@@ -34,6 +34,24 @@ _LATEX_DANGERS = [
     r"\\end\{document\}",
 ]
 
+_EQUATION_FINDER = re.compile(
+    r"(?:\\begin\{equation\*?\}[\s\S]*?\\end\{equation\*?\})|(?:\$\$[\s\S]*?\$\$)|(?:\\$begin:math:display$([\\s\\S]*?)\\\\$end:math:display$)",
+    re.I
+)
+
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+def _body_insufficient(body: str) -> bool:
+    if not body or not body.strip():
+        return True
+    # Удаляем figure-блоки и служебные команды перед оценкой
+    cleaned = re.sub(r"\\begin\{figure\}[\s\S]*?\\end\{figure\}", "", body, flags=re.I)
+    cleaned = re.sub(r"\\includegraphics\{.*?\}", "", cleaned)
+    # Считаем информативные символы
+    letters = re.findall(r"[A-Za-zА-Яа-я0-9]", cleaned)
+    return len(letters) < 300
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -43,12 +61,25 @@ def _client() -> genai.Client:
         raise RuntimeError("GEMINI_API_KEY not set in .env")
     return genai.Client(api_key=api_key)
 
+def _b64(img_bytes: bytes) -> str:
+    return base64.b64encode(img_bytes).decode("utf-8")
+
 def _model() -> str:
     return os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
 def _strip_code_fence(text: str) -> str:
-    m = _CODE_FENCE.search(text or "")
-    return (m.group(1) if m else text or "").strip()
+    if not text:
+        return ""
+    m = _LATEX_FENCE.search(text)
+    if not m:
+        m = _CODE_FENCE.search(text)
+    if m:
+        return m.group(1).strip()
+    # Если есть стартовая тройная кавычка без закрытия — просто удалим первую строку
+    stripped = text.lstrip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[^\n]*\n", "", stripped)
+    return stripped.strip()
 
 def _sanitize_latex_body(text: str) -> str:
     """Возвращает только тело для content.tex (без прелюдии и documentclass)."""
@@ -66,77 +97,394 @@ def _sanitize_latex_body(text: str) -> str:
 
     return t.strip()
 
+
+def _language_hint(text: str) -> str:
+    """Черновая метка языка по преобладающему алфавиту."""
+    if not text:
+        return "unknown"
+    cyr = len(_CYRILLIC_RE.findall(text))
+    lat = len(_LATIN_RE.findall(text))
+    if cyr > max(20, lat * 1.5):
+        return "cyrillic"
+    if lat > max(20, cyr * 1.5):
+        return "latin"
+    return "mixed"
+
+def _image_parts(
+    images: Optional[List[Union[str, Path, Dict, bytes, bytearray, memoryview]]],
+    job_base: Optional[Path] = None,
+) -> List[genai_types.Part]:
+    parts: List[genai_types.Part] = []
+    if not images:
+        return parts
+
+    def _resolve_path(item) -> Optional[Path]:
+        if isinstance(item, (str, Path)):
+            p = Path(item)
+        elif isinstance(item, dict):
+            candidate = item.get("path") or item.get("filename")
+            if candidate:
+                p = Path(candidate)
+            else:
+                return None
+        else:
+            return None
+        if not p.is_absolute() and job_base:
+            p = job_base / p
+        return p if p.exists() else None
+
+    def _part_from_bytes(data: bytes, mime: Optional[str] = None) -> Optional[genai_types.Part]:
+        if not data:
+            return None
+        mime_type = (mime or "image/png")
+        try:
+            return genai_types.Part.from_bytes(data=data, mime_type=mime_type)
+        except Exception:
+            return None
+
+    for it in images:
+        # Already a Part — pass through as-is.
+        if isinstance(it, genai_types.Part):
+            parts.append(it)
+            continue
+
+        # Raw bytes-like attachments (pdf_to_images output etc.).
+        if isinstance(it, (bytes, bytearray, memoryview)):
+            part = _part_from_bytes(bytes(it))
+            if part:
+                parts.append(part)
+            continue
+
+        # Dict payloads may contain either a path or inline bytes/base64.
+        if isinstance(it, dict):
+            data_field = it.get("bytes") or it.get("data")
+            if data_field and isinstance(data_field, (bytes, bytearray, memoryview)):
+                part = _part_from_bytes(bytes(data_field), it.get("mime") or it.get("mime_type"))
+                if part:
+                    parts.append(part)
+                continue
+            b64_field = it.get("b64") or it.get("base64")
+            if b64_field and isinstance(b64_field, str):
+                try:
+                    decoded = base64.b64decode(b64_field)
+                except Exception:
+                    decoded = b""
+                part = _part_from_bytes(decoded, it.get("mime") or it.get("mime_type"))
+                if part:
+                    parts.append(part)
+                continue
+
+        # Fallback: treat as filesystem path.
+        p = _resolve_path(it)
+        if not p:
+            continue
+        suf = p.suffix.lower()
+        mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
+        part = _part_from_bytes(p.read_bytes(), mime)
+        if part:
+            parts.append(part)
+
+    return parts
+
+
+def _split_meta_and_body(model_text: str) -> Tuple[Dict, str]:
+    """
+    Ищем два блока: ```json META {..}``` и ```latex ...```; если нет META — вернём {}.
+    Если нет latex-блока — заберём весь текст как латех и попытаемся очистить.
+    """
+    meta: Dict = {}
+    body: str = model_text or ""
+
+    m = _META_FENCE.search(model_text or "")
+    if m:
+        try:
+            meta = json.loads(m.group(1))
+        except Exception:
+            meta = {}
+
+    text_wo_meta = _META_FENCE.sub("", model_text or "")
+
+    lb = _LATEX_FENCE.search(text_wo_meta)
+    if lb:
+        body = lb.group(1)
+    else:
+        for block in _CODE_FENCE.finditer(text_wo_meta):
+            block_text = block.group(1)
+            if block_text and block_text.strip() and not block_text.strip().lower().startswith("json meta"):
+                body = block_text
+                break
+
+    body = _sanitize_latex_body(body)
+
+    # Если у META нет equations_captured — доберём из тела
+    if "equations_captured" not in meta or not meta.get("equations_captured"):
+        eqs = []
+        for match in _EQUATION_FINDER.finditer(body):
+            chunk = match.group(0)
+            if chunk:
+                eqs.append({"latex": chunk.strip()})
+        if eqs:
+            meta.setdefault("equations_captured", eqs)
+
+    return meta, body
+
 def compose_latex(
     text_blocks: List[str],
     figures: List[Dict],
-    mode: str = "book"  # "book" (обогащённый) или "strict" (дословно)
+    mode: str = "book",
+    images: Optional[List[Union[str, Path, Dict, bytes, bytearray, memoryview]]] = None,
+    meta_out_path: Optional[Path] = None,
+    job_dir: Optional[Path] = None,
 ) -> str:
     """
-    Собирает content.tex из текстовых блоков и метаданных о рисунках.
-    figures: [{ "filename": "figures/fig_p1_i1.png", "page": 1, "w": 800, "h": 600 }, ...]
+    Собирает content.tex из текстовых блоков и (реально прикреплённых) изображений.
+    figures — метаданные для подписи/размера; images — пути к PNG/JPG (страницы сканов и т.п.).
     """
     system = _read(COMPOSER_FILE)
-    # Добавим маленький "переключатель стиля"
+
+    # Жёстко подсвечиваем "полный конспект"
+    system += (
+        "\n\n## Output scope (DO NOT SKIP)\n"
+        "- Transcribe the FULL lecture: every section of prose and math.\n"
+        "- Figures are ADDITIVE. Do NOT output only figures or captions — always deliver the complete textual body.\n"
+        "- Use the provided theorem-like environments (definition, theorem, lemma, example, noteenv, question, proof).\n"
+        "- Don't emit preamble/documentclass; only LaTeX body for content.tex.\n"
+        "- If handwriting is illegible, transcribe the glyphs you see and add a comment like `% TODO verify ...` rather than dropping the content.\n"
+    )
+
+    # Встраиваем переключатель режима
     if mode == "book":
         system += (
-            "\n\n## Mode\n"
-            "- Produce a textbook-like, readable lecture note.\n"
-            "- Normalize definitions, fix mistakes, add minimal connective text if needed.\n"
+            "\n## Mode: book\n"
+            "- Make it readable like a textbook: fix obvious mistakes, expand shorthand into proper sentences.\n"
+            "- Keep math faithful. Do not invent content, but you may normalize notation and add minimal connective text.\n"
         )
     else:
         system += (
-            "\n\n## Mode\n"
+            "\n## Mode: strict\n"
             "- Transcribe strictly without paraphrasing. No additions beyond placeholders.\n"
         )
 
     payload = {
-        "text_blocks": text_blocks,
+        "text_blocks": text_blocks or [],
         "figures": [
             {
-                "path": f.get("filename"),
+                "path": f.get("filename") or f.get("path"),
                 "page": f.get("page"),
                 "width": f.get("w"),
-                "height": f.get("h")
-            } for f in figures
+                "height": f.get("h"),
+            } for f in (figures or [])
         ],
+        "note": (
+            "Attached are page images (PNG/JPG). Read every paragraph, bullet point, and formula from them.\n"
+            "Do not summarise away body text. If OCR text conflicts with the page, prefer the image.\n"
+            "Write the LaTeX in the same language that appears in the source material (detect automatically)."
+        ),
+        "mode": mode,
     }
 
     client = _client()
-    try:
-        resp = client.models.generate_content(
-            model=_model(),
-            contents=[system, json.dumps(payload, ensure_ascii=False)]
-        )
-        body = _sanitize_latex_body(resp.text or "")
-        if not body.strip():
-            body = "\\section{Empty Output}\\todo{Model returned empty body}"
-        return body
-    except Exception as e:
-        # Fallback на более дешёвую/лояльную модель
-        if "429" in str(e) or "quota" in str(e).lower():
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[system, json.dumps(payload, ensure_ascii=False)]
-            )
-            body = _sanitize_latex_body(resp.text or "")
-            if not body.strip():
-                body = "\\section{Empty Output}\\todo{Flash returned empty body}"
-            return body
-        raise
+    cfg = genai_types.GenerateContentConfig(
+        temperature=0.2,
+        top_p=0.9,
+        max_output_tokens=8192,
+        system_instruction=system,
+    )
 
-def editor_review(latex_body: str) -> str:
+    # Собираем все parts: сначала системный текст, затем JSON payload/текст/изображения
+    parts: List[genai_types.Part] = [
+        genai_types.Part.from_text(text=system),
+        genai_types.Part.from_text(text=json.dumps(payload, ensure_ascii=False)),
+    ]
+    if text_blocks:
+        rendered_blocks = [b.strip() for b in text_blocks if b and b.strip()]
+        if rendered_blocks:
+            max_chars = int(os.getenv("TEXT_BLOCKS_MAX_CHARS", "60000"))
+            blob = "\n\n---\n\n".join(rendered_blocks)
+            truncated = blob[:max_chars]
+            header = "## Extracted text blocks (OCR/parsed)\n"
+            if len(blob) > max_chars:
+                header += f"(truncated to {max_chars} characters)\n"
+            parts.append(genai_types.Part.from_text(text=header + truncated))
+    parts.extend(_image_parts(images, job_base=job_dir))
+
+    def _call(model_name: str, attempt: int, retry_hint: Optional[str] = None) -> Tuple[Dict, str, str]:
+        call_parts = list(parts)
+        if retry_hint:
+            call_parts.append(genai_types.Part.from_text(text=retry_hint))
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=[genai_types.Content(role="user", parts=call_parts)],
+            config=cfg,
+        )
+        raw = getattr(resp, "text", "") or ""
+        if job_dir:
+            raw_path = job_dir / f"model_raw_{model_name.replace('/', '-')}_attempt{attempt}.txt"
+            try:
+                raw_path.write_text(raw, encoding="utf-8")
+            except Exception:
+                pass
+        meta, body = _split_meta_and_body(raw)
+        return meta, _sanitize_latex_body(body), raw
+
+    meta: Dict = {}
+    raw = ""
+    retry_hint = None
+    model_used = _model()
+
+    def _enforce_retry_hint(previous_body: str) -> str:
+        return (
+            "RETRY DIRECTIVE: Your previous output missed most of the lecture body."
+            " You MUST transcribe every paragraph and equation from the provided text/images."
+            " Always return the full META and LaTeX blocks with rich textual content, sections,"
+            " and math. Output must be substantially longer than a lone figure or heading."
+        )
+
+    try:
+        meta, body, raw = _call(model_used, attempt=1)
+        if _body_insufficient(body):
+            retry_hint = _enforce_retry_hint(body)
+            meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+    except Exception as e:
+        if "429" in str(e) or "quota" in str(e).lower():
+            model_used = "gemini-2.5-flash"
+            meta, body, raw = _call(model_used, attempt=1, retry_hint=retry_hint)
+            if _body_insufficient(body):
+                retry_hint = _enforce_retry_hint(body)
+                meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+        else:
+            raise
+
+    if _body_insufficient(body):
+        body = (
+            "\\section{Transcription Missing}\n"
+            "% TODO: Model failed to return the lecture body. Inspect model_raw files for debugging.\n"
+        )
+
+    if meta_out_path:
+        try:
+            meta = meta or {}
+            # Дополняем обязательные поля
+            if not meta.get("figures_captured"):
+                meta["figures_captured"] = figures
+            meta.setdefault("figures", figures)
+            meta.setdefault("figures_info", figures)
+            meta.setdefault("images_attached", len(images or []))
+            meta.setdefault("mode", mode)
+            meta.setdefault("text_blocks", text_blocks)
+            meta.setdefault("language", _language_hint(body))
+            if retry_hint:
+                meta.setdefault("retry_hint_used", True)
+            if raw:
+                meta.setdefault("raw_tokens", len(raw))
+            meta_out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return body
+
+def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
     """
-    Второй проход: вычитка/исправления. Возвращает исправленное тело.
+    Второй проход: вычитка/исправления. Возвращает исправленное тело, но не деградирует контент.
     """
+    baseline_insufficient = _body_insufficient(latex_body)
+    baseline_lang = _language_hint(latex_body)
+
     system = _read(EDITOR_FILE)
     client = _client()
+    cfg = genai_types.GenerateContentConfig(
+        temperature=0.1,
+        top_p=0.9,
+        max_output_tokens=4096,
+        system_instruction=system,
+    )
+
+    parts = [genai_types.Part.from_text(text=latex_body)]
+
     try:
         resp = client.models.generate_content(
             model=_model(),
-            contents=[system, latex_body]
+            contents=[genai_types.Content(role="user", parts=parts)],
+            config=cfg,
         )
-        body = _sanitize_latex_body(resp.text or "")
-        return body if body.strip() else latex_body
+        raw = getattr(resp, "text", "") or ""
+        decision_log: Dict[str, Union[str, int, bool]] = {
+            "baseline_len": len(latex_body),
+            "baseline_lang": baseline_lang,
+        }
+        if job_dir:
+            raw_path = job_dir / "editor_raw.txt"
+            try:
+                raw_path.write_text(raw, encoding="utf-8")
+            except Exception:
+                pass
+
+        body = _sanitize_latex_body(raw)
+        edited_lang = _language_hint(body)
+        decision_log["edited_len"] = len(body)
+        decision_log["edited_lang"] = edited_lang
+
+        # Если редактор убил текст — оставляем исходник
+        if (not body.strip()) or (_body_insufficient(body) and not baseline_insufficient):
+            decision_log["decision"] = "fallback_empty_or_insufficient"
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return latex_body
+
+        # Если язык сменился (например, с рус. на англ.) — оставляем исходник
+        if baseline_lang in {"cyrillic", "latin"} and edited_lang != baseline_lang:
+            decision_log["decision"] = "fallback_language"
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return latex_body
+
+        # Дополнительная страховка: если новый текст в 2 раза короче, оставим исходник
+        if len(body) < max(200, int(len(latex_body) * 0.8)):
+            decision_log["decision"] = "fallback_length"
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return latex_body
+
+        if "```" in body:
+            decision_log["decision"] = "fallback_unclosed_fence"
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return latex_body
+
+        decision_log["decision"] = "accept"
+        if job_dir:
+            try:
+                (job_dir / "editor_decision.json").write_text(
+                    json.dumps(decision_log, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        return body
     except Exception:
         # На ошибку просто вернём исходник
         return latex_body
