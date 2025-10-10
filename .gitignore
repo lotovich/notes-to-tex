@@ -219,3 +219,26 @@ build/
 *.toc
 *.synctex.gz
 *.pdf
+
+# --- Project outputs & data ---
+results/
+artifacts/
+output/
+logs/
+tmp/
+.cache/
+# Keep test fixtures private unless explicitly allowed
+golden/
+# Large binaries (consider LFS if you must track)
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.zip
+*.tar
+*.tar.gz
+# Keep folder markers if you want the directories visible without data
+golden/*
+!golden/.gitkeep
+results/*
+!results/.gitkeep

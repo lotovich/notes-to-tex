@@ -15,7 +15,28 @@
   \setsansfont{Arial}
   \setmonofont{Courier New}
 \fi
-\RequirePackage[english,russian]{babel}
+
+% --- Language setup ---
+% Язык по умолчанию - английский (последний в списке = основной)
+\RequirePackage[russian,english]{babel}  % ← ПОМЕНЯЛИ ПОРЯДОК!
+\RequirePackage{ifthen}
+
+% Команда для явного переключения языка
+\newcommand{\setdoclanguage}[1]{%
+  \ifthenelse{\equal{#1}{ru}}{%
+    \selectlanguage{russian}%
+    \fontencoding{T2A}\selectfont%
+    \def\figurename{Рис.}%
+    \def\tablename{Табл.}%
+    \def\contentsname{Содержание}%
+  }{%
+    \selectlanguage{english}%
+    \fontencoding{T1}\selectfont%
+    \def\figurename{Fig.}%
+    \def\tablename{Table}%
+    \def\contentsname{Contents}%
+  }%
+}
 
 % --- math ---
 \RequirePackage{amsmath,amssymb,amsthm,mathtools}

@@ -10,6 +10,33 @@ import base64
 # Загружаем .env из корня проекта
 load_dotenv()
 
+def _looks_like_json_blob(txt: str) -> bool:
+    if not txt or not isinstance(txt, str):
+        return False
+    t = txt.strip()
+    json_markers = ['"blocks":', '"headers":', '"language":', '{"type":']
+    return any(marker in t for marker in json_markers) or (t.startswith('{') and '":' in t)
+
+def _is_json_truncated(raw_text: str) -> bool:
+    """Check if JSON output appears truncated (incomplete)"""
+    if not raw_text or not isinstance(raw_text, str):
+        return False
+
+    stripped = raw_text.rstrip()
+
+    # Check for truncation patterns
+    truncation_patterns = [
+        '"**Step',  # Cut off in middle of step
+        '"text": "**Step',  # Cut off in step text
+    ]
+
+    # Check if ends with truncation pattern without closing quote
+    for pattern in truncation_patterns:
+        if pattern in stripped and not stripped.endswith('"'):
+            return True
+
+    return False
+
 PROMPTS_DIR = (Path(__file__).resolve().parent / "prompts")
 COMPOSER_FILE = PROMPTS_DIR / "composer.md"
 EDITOR_FILE   = PROMPTS_DIR / "editor.md"
@@ -25,6 +52,33 @@ _REMOVE_PREAMBLE = re.compile(
     re.I
 )
 _END_DOCUMENT = re.compile(r"\\end\{document\}", re.I)
+
+# Prefer PRIMARY JSON (single-object) for model output
+def _try_parse_primary_json(raw: str) -> Optional[Dict]:
+    """Try to parse PRIMARY JSON (single-object) from model output.
+    Accepts plain JSON or text with leading/trailing garbage; verifies presence of `blocks` list.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    # First attempt: direct parse
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and ("blocks" in obj or "headers" in obj):
+            return obj
+    except Exception:
+        pass
+    # Fallback: slice the largest {...} region
+    i = raw.find("{")
+    j = raw.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        candidate = raw[i:j+1]
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict) and ("blocks" in obj or "headers" in obj):
+                return obj
+        except Exception:
+            return None
+    return None
 
 _LATEX_DANGERS = [
     r"\\usepackage\{.*?\}",     # не позволяем добавлять пакеты
@@ -287,7 +341,7 @@ def compose_latex(
     cfg = genai_types.GenerateContentConfig(
         temperature=0.2,
         top_p=0.9,
-        max_output_tokens=8192,
+        max_output_tokens=16384,
         system_instruction=system,
     )
 
@@ -324,6 +378,11 @@ def compose_latex(
                 raw_path.write_text(raw, encoding="utf-8")
             except Exception:
                 pass
+        # Prefer PRIMARY JSON (single structured object with blocks)
+        primary = _try_parse_primary_json(raw)
+        if primary:
+            return primary, "", raw
+        # Fallback: dual-block META + LaTeX
         meta, body = _split_meta_and_body(raw)
         return meta, _sanitize_latex_body(body), raw
 
@@ -334,24 +393,39 @@ def compose_latex(
 
     def _enforce_retry_hint(previous_body: str) -> str:
         return (
-            "RETRY DIRECTIVE: Your previous output missed most of the lecture body."
-            " You MUST transcribe every paragraph and equation from the provided text/images."
-            " Always return the full META and LaTeX blocks with rich textual content, sections,"
-            " and math. Output must be substantially longer than a lone figure or heading."
+            "RETRY DIRECTIVE: Your previous output missed the full lecture body. "
+            "Return a SINGLE JSON object with all content blocks (sections, paragraphs, equations, lists, figures) — no prose outside JSON. "
+            "If you cannot comply, return the legacy two fenced blocks: first ```json META { ... } then ```latex with the full LaTeX body."
         )
 
     try:
         meta, body, raw = _call(model_used, attempt=1)
-        if _body_insufficient(body):
+        is_primary = isinstance(meta, dict) and bool(meta)
+
+        # Check for JSON truncation
+        if _is_json_truncated(raw):
+            retry_hint = "Your output was truncated. Return COMPLETE JSON with ALL examples and steps."
+            meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+            is_primary = isinstance(meta, dict) and bool(meta)
+        elif (not is_primary) and _body_insufficient(body):
             retry_hint = _enforce_retry_hint(body)
             meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+            is_primary = isinstance(meta, dict) and bool(meta)
     except Exception as e:
         if "429" in str(e) or "quota" in str(e).lower():
-            model_used = "gemini-2.5-flash"
+            model_used = "gemini-2.5-pro"
             meta, body, raw = _call(model_used, attempt=1, retry_hint=retry_hint)
-            if _body_insufficient(body):
+            is_primary = isinstance(meta, dict) and bool(meta)
+
+            # Check for JSON truncation in fallback model too
+            if _is_json_truncated(raw):
+                retry_hint = "Your output was truncated. Return COMPLETE JSON with ALL examples and steps."
+                meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+                is_primary = isinstance(meta, dict) and bool(meta)
+            elif (not is_primary) and _body_insufficient(body):
                 retry_hint = _enforce_retry_hint(body)
                 meta, body, raw = _call(model_used, attempt=2, retry_hint=retry_hint)
+                is_primary = isinstance(meta, dict) and bool(meta)
         else:
             raise
 
@@ -361,25 +435,28 @@ def compose_latex(
             "% TODO: Model failed to return the lecture body. Inspect model_raw files for debugging.\n"
         )
 
-    if meta_out_path:
-        try:
-            meta = meta or {}
-            # Дополняем обязательные поля
-            if not meta.get("figures_captured"):
-                meta["figures_captured"] = figures
-            meta.setdefault("figures", figures)
-            meta.setdefault("figures_info", figures)
-            meta.setdefault("images_attached", len(images or []))
-            meta.setdefault("mode", mode)
-            meta.setdefault("text_blocks", text_blocks)
-            meta.setdefault("language", _language_hint(body))
-            if retry_hint:
-                meta.setdefault("retry_hint_used", True)
-            if raw:
-                meta.setdefault("raw_tokens", len(raw))
-            meta_out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+    # Prefer PRIMARY JSON (meta dict) so downstream can build TeX deterministically
+    if isinstance(meta, dict) and meta:
+        if meta_out_path:
+            try:
+                meta = meta or {}
+                # Дополняем обязательные поля
+                if not meta.get("figures_captured"):
+                    meta["figures_captured"] = figures
+                meta.setdefault("figures", figures)
+                meta.setdefault("figures_info", figures)
+                meta.setdefault("images_attached", len(images or []))
+                meta.setdefault("mode", mode)
+                meta.setdefault("text_blocks", text_blocks)
+                meta.setdefault("language", _language_hint(body))
+                if retry_hint:
+                    meta.setdefault("retry_hint_used", True)
+                if raw:
+                    meta.setdefault("raw_tokens", len(raw))
+                meta_out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        return meta
 
     return body
 
@@ -393,9 +470,9 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
     system = _read(EDITOR_FILE)
     client = _client()
     cfg = genai_types.GenerateContentConfig(
-        temperature=0.1,
+        temperature=0.2,
         top_p=0.9,
-        max_output_tokens=4096,
+        max_output_tokens=16384,
         system_instruction=system,
     )
 
@@ -450,8 +527,26 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
                     pass
             return latex_body
 
+        # Если исходный latex_body выглядит как JSON, принимаем вывод редактора
+        if _looks_like_json_blob(latex_body):
+            decision_log["decision"] = "accept_over_json"
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return body
+
+        # Предупреждение если editor сократил контент >15%
+        baseline_is_json = _looks_like_json_blob(latex_body)
+        if not baseline_is_json and len(body) < int(len(latex_body) * 0.85):
+            decision_log["warning"] = "Editor reduced length"
+
         # Дополнительная страховка: если новый текст в 2 раза короче, оставим исходник
-        if len(body) < max(200, int(len(latex_body) * 0.8)):
+        if len(body) < max(200, int(len(latex_body) * 0.50)):
             decision_log["decision"] = "fallback_length"
             if job_dir:
                 try:

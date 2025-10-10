@@ -128,3 +128,76 @@ def enforce_latex_conventions(latex: str) -> str:
     latex = _merge_consecutive_displays_to_align(latex)
     latex = _promote_top_header_to_section(latex)
     return latex
+
+def fix_cyrillic_in_math(latex: str) -> str:
+    """
+    Оборачивает кириллицу внутри матрежима в \\text{...}.
+    Примеры: V_г -> V_\\text{г}, x^{макс} -> x^{\\text{макс}}.
+    """
+    # _<кириллица>, ^<кириллица>
+    latex = re.sub(r"_([А-Яа-яЁё])", r"_\\text{\1}", latex)
+    latex = re.sub(r"\^([А-Яа-яЁё])", r"^\\text{\1}", latex)
+    # _{<кириллица+>}, ^{<кириллица+>}
+    latex = re.sub(r"_\{([А-Яа-яЁё]+)\}", r"_{\\text{\1}}", latex)
+    latex = re.sub(r"\^\{([А-Яа-яЁё]+)\}", r"^{\\text{\1}}", latex)
+
+    # кириллица внутри $...$
+    def _wrap_cyr_inline(m):
+        block = m.group(1)
+        block = re.sub(r"([А-Яа-яЁё]+)", r"\\text{\1}", block)
+        return f"${block}$"
+    latex = re.sub(r"\$([^$\n]+)\$", _wrap_cyr_inline, latex)
+
+    # кириллица внутри \[ ... \]
+    def _wrap_cyr_display(m):
+        block = m.group(1)
+        block = re.sub(r"([А-Яа-яЁё]+)", r"\\text{\1}", block)
+        return f"\\[{block}\\]"
+    latex = re.sub(r"\\\[([\\s\\S]*?)\\\]", _wrap_cyr_display, latex)
+
+    return latex
+
+def fix_dano_environment(latex: str) -> str:
+    """
+    Меняем notebox, начинающийся с 'Дано', на example с заголовком [Дано].
+    Поддерживаем варианты: 'Дано:', 'Дано -', 'Дано —', 'Дано.' и жирное textbf{Дано}.
+    Работают оба случая: notebox с титулом {..} и без.
+    """
+
+    # 1) notebox c обязательным заголовком {Title}
+    def _repl_titled(m):
+        title = m.group(1) or ""
+        body  = m.group(2)
+        # если заголовок уже Дано — просто конвертируем
+        if re.match(r"\s*Дано\b", title, flags=re.IGNORECASE):
+            return f"\\begin{{example}}[Дано]\n{body}\n\\end{{example}}"
+        # если в теле в начале идёт Дано: ... — переносим в [Дано] и вырезаем маркер
+        m2 = re.match(r"\s*(?:\\textbf\{\s*Дано\s*\}|Дано)\s*[:\-—\.]?\s*", body, flags=re.IGNORECASE)
+        if m2:
+            body = body[m2.end():]
+            return f"\\begin{{example}}[Дано]\n{body}\n\\end{{example}}"
+        # иначе оставляем как было
+        return m.group(0)
+
+    latex = re.sub(
+        r"\\begin\{notebox\}\{([^}]*)\}([\s\S]*?)\\end\{notebox\}",
+        _repl_titled,
+        latex
+    )
+
+    # 2) notebox без заголовка
+    def _repl_plain(m):
+        body = m.group(1)
+        m2 = re.match(r"\s*(?:\\textbf\{\s*Дано\s*\}|Дано)\s*[:\-—\.]?\s*", body, flags=re.IGNORECASE)
+        if m2:
+            body = body[m2.end():]
+            return f"\\begin{{example}}[Дано]\n{body}\n\\end{{example}}"
+        return m.group(0)
+
+    latex = re.sub(
+        r"\\begin\{notebox\}([\s\S]*?)\\end\{notebox\}",
+        _repl_plain,
+        latex
+    )
+
+    return latex

@@ -1,7 +1,5 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=1in]{geometry}
-
-% Подключаем мини-стиль
 \usepackage{notes-core}
 
 \title{<Course or Lecture>}
@@ -9,11 +7,13 @@
 \date{\today}
 
 \begin{document}
+
+\setdoclanguage{LANGUAGE_PLACEHOLDER}
+
 \maketitle
 \tableofcontents
 \bigskip
 
-% Агент генерит только этот файл
 \input{content.tex}
 
 \end{document}
