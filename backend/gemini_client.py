@@ -570,6 +570,48 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
                     pass
             return latex_body
 
+        # SAFETY CHECK 1: Empty environments
+        import re
+        empty_env_patterns = [
+            r'\\begin\{proofbox\}\s*\\end\{proofbox\}',
+            r'\\begin\{examplebox\}[^\}]*\}\{\}\s*\\end\{examplebox\}',
+            r'\\begin\{definitionbox\}[^\}]*\}\{\}\s*\\end\{definitionbox\}',
+            r'\\begin\{theoremnox\}[^\}]*\}\{\}\s*\\end\{theoremnox\}',
+        ]
+
+        for pattern in empty_env_patterns:
+            if re.search(pattern, body):
+                decision_log["decision"] = "fallback_empty_environment"
+                decision_log["reason"] = f"Found empty environment matching {pattern}"
+                if job_dir:
+                    try:
+                        (job_dir / "editor_decision.json").write_text(
+                            json.dumps(decision_log, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+                return latex_body
+
+        # SAFETY CHECK 2: Excessive content deletion (>20%)
+        baseline_word_count = len(re.findall(r'\w+', latex_body))
+        edited_word_count = len(re.findall(r'\w+', body))
+
+        if baseline_word_count > 100 and edited_word_count < baseline_word_count * 0.80:
+            decision_log["decision"] = "fallback_excessive_deletion"
+            decision_log["baseline_words"] = baseline_word_count
+            decision_log["edited_words"] = edited_word_count
+            decision_log["deletion_percent"] = int((1 - edited_word_count/baseline_word_count) * 100)
+            if job_dir:
+                try:
+                    (job_dir / "editor_decision.json").write_text(
+                        json.dumps(decision_log, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+            return latex_body
+
         decision_log["decision"] = "accept"
         if job_dir:
             try:

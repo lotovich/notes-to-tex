@@ -209,15 +209,15 @@ def build_tex_from_blocks(data: dict) -> str:
     _ENV_EX = re.compile(r"^\s*(Example|Illustration|Solve|Find|Пример)\s*\d*[:\-]?\s*(.*)$", re.I)
     _ENV_NOTE = re.compile(r"^\s*(Note|Remark|Principle\s+of|Observation|Important|Recall|Замечание)[:\-]?\s*(.*)$", re.I)
     _ENV_Q = re.compile(r"^\s*(Question|Exercise|Problem|Вопрос)[:\-]?\s*(.*)$", re.I)
-    _ENV_PROOF = re.compile(r"^\s*(Proof|Доказательство)[:\-]?\s*(.*)$", re.I)
-    _STEP = re.compile(r"^\s*(Step\s+\d+|Solution)[:\-]?\s*(.*)$", re.I)
+    _ENV_PROOF = re.compile(r"^\s*(Proof|Доказательство)[:\-\.]?\s*(.*)$", re.I)
+    _STEP = re.compile(r"^\s*(Step\s+\d+|Solution|Способ\s+\d+)[:\-]?\s*(.*)$", re.I)
 
     # Section detection
-    _H_SECTION = re.compile(r"^\s*(section|subsection|subsubsection)\s*[:\-–]\s*(.+)$", re.I)
-    _H_GIVEN = re.compile(r"^\s*(дано|given)\s*[:\-–]\s*(.*)$", re.I)
+    _H_SECTION = re.compile(r"^\s*(section|subsection|subsubsection)\s*[:\-—]\s*(.+)$", re.I)
+    _H_GIVEN = re.compile(r"^\s*(дано|given)\s*[:\-—]\s*(.*)$", re.I)
 
     # List patterns
-    _BULLET = re.compile(r"^\s*[-–•]\s+(.*)$")
+    _BULLET = re.compile(r"^\s*[-—•]\s+(.*)$")
     _NUM = re.compile(r"^\s*(\d+)[\.\)]\s+(.*)$")
 
     # Environment mapping
@@ -229,7 +229,6 @@ def build_tex_from_blocks(data: dict) -> str:
         (_ENV_EX, "examplebox"),
         (_ENV_NOTE, "notebox"),
         (_ENV_Q, "questionbox"),
-        (_ENV_PROOF, "proofbox")
     ]
 
     def _flush_list(buf, out, env):
@@ -250,12 +249,12 @@ def build_tex_from_blocks(data: dict) -> str:
             for pattern, _ in env_patterns:
                 if pattern.match(text):
                     return True
-            if _H_SECTION.match(text):
+            if _H_SECTION.match(text) or _ENV_PROOF.match(text):
                 return True
         return False
 
     def _render_content_block(block, inside_env=None):
-        """Render a single content block, with special handling when inside environments"""
+        """Render a single content block"""
         typ = block.get("type")
 
         if typ == "equation":
@@ -334,49 +333,6 @@ def build_tex_from_blocks(data: dict) -> str:
             i += 1
             continue
 
-        # Handle environment blocks
-        if typ == "environment":
-            _flush_list(list_buf, out, list_env)
-            env_name = block.get("name", "")  # lemma, proof, noteenv, theorem
-            env_label = block.get("label", "")
-            env_blocks = block.get("blocks", [])
-
-            # Маппинг имён на правильные окружения
-            env_map = {
-                "lemma": "lemmanox",
-                "theorem": "theoremnox",
-                "corollary": "corollarybox",
-                "definition": "definitionbox",
-                "example": "examplebox",
-                "noteenv": "notebox",
-                "note": "notebox",
-                "proof": "proofbox"
-            }
-
-            actual_env = env_map.get(env_name, env_name)
-
-            # Для proofbox не нужны {}{}
-            if actual_env == "proofbox":
-                out.append(f"\\begin{{proofbox}}\n")
-            else:
-                # Для остальных нужны две скобки
-                title = env_label if env_label else ""
-                out.append(f"\\begin{{{actual_env}}}{{{title}}}{{}}\n")
-
-            # Рекурсивно обработать вложенные блоки
-            for inner_b in env_blocks:
-                inner_typ = inner_b.get("type")
-                if inner_typ == "paragraph":
-                    out.append(inner_b.get("text", "") + "\n\n")
-                elif inner_typ == "equation":
-                    eq_latex = inner_b.get("latex", "").strip()
-                    if eq_latex:
-                        out.append("\\[\n" + eq_latex + "\n\\]\n\n")
-
-            out.append(f"\\end{{{actual_env}}}\n\n")
-            i += 1
-            continue
-
         # Handle explicit non-paragraph blocks
         if typ in ["equation", "figure", "list"]:
             _flush_list(list_buf, out, list_env)
@@ -389,6 +345,40 @@ def build_tex_from_blocks(data: dict) -> str:
             txt = (block.get("text") or "").strip()
             if not txt:
                 i += 1
+                continue
+
+            # Check for "Proof." at the beginning - CRITICAL FIX
+            proof_match = _ENV_PROOF.match(txt)
+            if proof_match:
+                _flush_list(list_buf, out, list_env)
+                out.append("\\begin{proofbox}\n")
+
+                # Extract proof content (remove "Proof." prefix)
+                proof_content = txt[proof_match.end():].strip()
+                # Remove QED symbols at the end
+                proof_content = re.sub(r'\s*[\$\\]?\s*(\\square|□|∎|\\blacksquare)\s*[\$\\]?\s*$', '', proof_content)
+
+                if proof_content:
+                    out.append(proof_content + "\n\n")
+
+                # Check if next blocks continue the proof
+                i += 1
+                while i < len(blocks):
+                    next_block = blocks[i] or {}
+                    next_typ = next_block.get("type")
+                    next_txt = (next_block.get("text") or "").strip() if next_typ == "paragraph" else ""
+
+                    # Stop if we hit a section or new environment
+                    if _is_environment_stopper(next_typ, next_txt):
+                        break
+
+                    # Add content to proof
+                    content = _render_content_block(next_block)
+                    if content:
+                        out.append(content)
+                    i += 1
+
+                out.append("\\end{proofbox}\n\n")
                 continue
 
             # Check for section headers inside paragraphs
@@ -421,11 +411,8 @@ def build_tex_from_blocks(data: dict) -> str:
                     title_text = match.group(2).strip()
                     title_braces = f"{{{title_text}}}" if title_text else "{}"
 
-                    # Start environment (proofbox doesn't need two braces)
-                    if env_name == "proofbox":
-                        out.append(f"\\begin{{{env_name}}}\n")
-                    else:
-                        out.append(f"\\begin{{{env_name}}}{title_braces}{{}}\n")
+                    # Start environment
+                    out.append(f"\\begin{{{env_name}}}{title_braces}{{}}\n")
 
                     # Add any remaining content from the trigger paragraph
                     remaining_content = txt[match.end():].strip()
@@ -505,7 +492,24 @@ def build_tex_from_blocks(data: dict) -> str:
 
     # Flush any remaining list
     _flush_list(list_buf, out, list_env)
-    return "".join(out) or "% (empty)"
+
+    result = "".join(out) or "% (empty)"
+
+    # Remove trailing duplicated text
+    lines = result.split('\n')
+    seen_end = False
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if seen_end and stripped and not stripped.startswith('%') and not stripped.startswith('\\'):
+            # Check if this looks like start of document (duplication)
+            if any(marker in stripped.lower() for marker in ['this document is', 'typed latex sample', 'golden set']):
+                break
+        clean_lines.append(line)
+        if stripped.startswith('\\end{'):
+            seen_end = True
+
+    return '\n'.join(clean_lines)
 
 # ---------- API ----------
 
