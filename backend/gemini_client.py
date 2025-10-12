@@ -152,17 +152,15 @@ def _sanitize_latex_body(text: str) -> str:
     return t.strip()
 
 
-def _language_hint(text: str) -> str:
+def _language_hint(text: str, sample_chars: int = 5000) -> str:
     """Черновая метка языка по преобладающему алфавиту."""
-    if not text:
-        return "unknown"
-    cyr = len(_CYRILLIC_RE.findall(text))
-    lat = len(_LATIN_RE.findall(text))
-    if cyr > max(20, lat * 1.5):
-        return "cyrillic"
-    if lat > max(20, cyr * 1.5):
-        return "latin"
-    return "mixed"
+    t = text or ""
+    t = re.sub(r"\\[a-zA-Z]+\{.*?\}", "", t)
+    t = re.sub(r"\\[a-zA-Z]+", "", t)
+    t = re.sub(r"https?://\S+", "", t)
+    snippet = t[:sample_chars]
+    cyr = sum(1 for c in snippet if 0x0400 <= ord(c) <= 0x04FF)
+    return "ru" if cyr > 10 else "en"
 
 def _image_parts(
     images: Optional[List[Union[str, Path, Dict, bytes, bytearray, memoryview]]],
@@ -504,19 +502,6 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
         # Если редактор убил текст — оставляем исходник
         if (not body.strip()) or (_body_insufficient(body) and not baseline_insufficient):
             decision_log["decision"] = "fallback_empty_or_insufficient"
-            if job_dir:
-                try:
-                    (job_dir / "editor_decision.json").write_text(
-                        json.dumps(decision_log, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
-            return latex_body
-
-        # Если язык сменился (например, с рус. на англ.) — оставляем исходник
-        if baseline_lang in {"cyrillic", "latin"} and edited_lang != baseline_lang:
-            decision_log["decision"] = "fallback_language"
             if job_dir:
                 try:
                     (job_dir / "editor_decision.json").write_text(

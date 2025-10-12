@@ -659,31 +659,55 @@ async def process(
     assert src_main.exists(), f"main-template.tex not found at {src_main}"
 
     doc_language = "en"
+
+    def guess_lang_from_text(text: str) -> str:
+        cleaned = re.sub(r"\\[a-zA-Z]+\{.*?\}", "", text or "")[:5000]
+        cyr = sum(1 for c in cleaned if 0x0400 <= ord(c) <= 0x04FF)
+        return "ru" if cyr > 10 else "en"
+
+    meta = None
+    raw_lang = ""
+
+    # 2) meta.json (если есть)
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            raw_lang = str(meta.get("language", "en")).lower().strip()
-
+            raw_lang = str(meta.get("language", "")).lower().strip()
             if raw_lang in ["ru", "russian", "cyrillic"]:
                 doc_language = "ru"
             elif raw_lang in ["en", "english", "latin"]:
                 doc_language = "en"
-            else:
-                sample_text = ""
-                if isinstance(meta, dict) and meta.get("text_blocks"):
-                    sample_text = " ".join(str(b) for b in meta["text_blocks"][:2])[:1000]
-                elif latex_body:
-                    sample_text = latex_body[:1000]
-
-                cyrillic_count = sum(1 for c in sample_text if 0x0400 <= ord(c) <= 0x04FF)
-                doc_language = "ru" if cyrillic_count > 10 else "en"
-
-            meta["language"] = doc_language
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"✅ Language detected: {doc_language} (raw was: {raw_lang})")
         except Exception as e:
             logger.warning(f"Could not read meta.json: {e}")
-            doc_language = "en"
+
+    # 3) editor_decision.json (подсказка), только если язык ещё не определён
+    if doc_language == "en":
+        editor_path = job_dir / "editor_decision.json"
+        if editor_path.exists():
+            try:
+                editor_meta = json.loads(editor_path.read_text(encoding="utf-8"))
+                ed_lang = str(editor_meta.get("edited_lang", "")).lower().strip()
+                if ed_lang in ["ru", "russian", "cyrillic"]:
+                    doc_language = "ru"
+                elif ed_lang in ["en", "english", "latin"]:
+                    doc_language = "en"
+            except Exception as e:
+                logger.warning(f"Could not read editor_decision.json: {e}")
+
+    # 4) эвристика по тексту, если всё ещё "en"
+    if doc_language == "en":
+        sample_text = latex_body or ""
+        doc_language = guess_lang_from_text(sample_text)
+
+    # 5) сохраняем обратно в meta.json (создаём при необходимости)
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["language"] = doc_language
+    try:
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info(f"✅ Language set to: {doc_language} (raw meta was: {raw_lang or '∅'})")
+    except Exception as e:
+        logger.warning(f"Could not write meta.json: {e}")
 
     template_content = src_main.read_text(encoding="utf-8")
     template_content = template_content.replace("LANGUAGE_PLACEHOLDER", doc_language)
