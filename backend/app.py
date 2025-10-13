@@ -199,8 +199,6 @@ def build_tex_from_blocks(data: dict) -> str:
     """Build LaTeX from the PRIMARY JSON format that contains a `blocks` list.
     Wraps appropriate content into LaTeX environments from notes-core.sty based on text triggers.
     """
-    import re
-
     # Environment detection patterns
     _ENV_DEF = re.compile(r"^\s*(Definition|Определение)[:\-]?\s*(.*)$", re.I)
     _ENV_THM = re.compile(r"^\s*(Theorem|Теорема)[:\-]?\s*(.*)$", re.I)

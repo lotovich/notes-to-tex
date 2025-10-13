@@ -556,7 +556,6 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
             return latex_body
 
         # SAFETY CHECK 1: Empty environments
-        import re
         empty_env_patterns = [
             r'\\begin\{proofbox\}\s*\\end\{proofbox\}',
             r'\\begin\{examplebox\}[^\}]*\}\{\}\s*\\end\{examplebox\}',
