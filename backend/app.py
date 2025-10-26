@@ -10,6 +10,7 @@ from backend.gemini_client import compose_latex, editor_review
 from backend.utils.postprocess import enforce_latex_conventions, fix_cyrillic_in_math, fix_dano_environment
 from backend.utils.pdf import pdf_to_images
 from backend.utils.validators import run_validators, finalize_content
+from backend.utils.ocr_raw import make_ocr_baseline
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "latex"
@@ -529,6 +530,16 @@ async def process(
     with open(input_path, "wb") as f:
         f.write(await file.read())
 
+    # 2.5) Create OCR baseline for verbatim checking
+    try:
+        ocr_baseline_text = make_ocr_baseline(input_path, job_dir)
+        ocr_baseline_path = job_dir / "ocr_raw.txt"
+        ocr_baseline_path.write_text(ocr_baseline_text, encoding="utf-8")
+    except Exception as e:
+        # If OCR baseline fails - not critical, continue
+        logger.warning(f"Failed to create OCR baseline: {e}")
+        ocr_baseline_text = ""
+
     images = []
     if input_path.suffix.lower() == ".pdf":
         try:
@@ -701,6 +712,11 @@ async def process(
     if not isinstance(meta, dict):
         meta = {}
     meta["language"] = doc_language
+
+    # Add path to OCR baseline
+    if (job_dir / "ocr_raw.txt").exists():
+        meta.setdefault("ocr_raw", "ocr_raw.txt")
+
     try:
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info(f"✅ Language set to: {doc_language} (raw meta was: {raw_lang or '∅'})")

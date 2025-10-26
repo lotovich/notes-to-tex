@@ -122,11 +122,21 @@ def _promote_top_header_to_section(latex: str) -> str:
 
     return "\n".join(lines)
 
+def _fix_item_brackets(latex: str) -> str:
+    """
+    Fix itemize formatting: convert \item[\textbf{...}] to \item \textbf{...}
+    Also handles other formats like \item[text] -> \item text
+    """
+    # Pattern to match \item[content] and convert to \item content
+    latex = re.sub(r'\\item\[\s*([^\]]+)\s*\]', r'\\item \1', latex)
+    return latex
+
 def enforce_latex_conventions(latex: str) -> str:
     latex = _map_chapter_to_section(latex)
     latex = _ensure_two_braces_for_boxes(latex)
     latex = _merge_consecutive_displays_to_align(latex)
     latex = _promote_top_header_to_section(latex)
+    latex = _fix_item_brackets(latex)
     return latex
 
 def fix_cyrillic_in_math(latex: str) -> str:

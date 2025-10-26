@@ -21,6 +21,9 @@ from pathlib import Path
 import zipfile
 import requests
 from requests.adapters import HTTPAdapter, Retry
+import sys
+sys.path.insert(0, str(Path(__file__).parent))  # for import from backend/
+from backend.utils.verbatim_checker import compare_texts
 
 def session_with_retries():
     s = requests.Session()
@@ -70,6 +73,20 @@ def count_equations(tex: str) -> int:
 def count_figures(tex: str) -> int:
     return len(re.findall(r"\\includegraphics", tex))
 
+def read_ocr_raw(out_dir: Path) -> str:
+    """Read ocr_raw.txt from output folder."""
+    ocr_file = out_dir / "ocr_raw.txt"
+    if ocr_file.exists():
+        return ocr_file.read_text(encoding="utf-8", errors="ignore")
+    return ""
+
+def read_content_tex(out_dir: Path) -> str:
+    """Read content.tex (main LaTeX output)."""
+    content = out_dir / "content.tex"
+    if content.exists():
+        return content.read_text(encoding="utf-8", errors="ignore")
+    return ""
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="folder with pdf/jpg/jpeg/png")
@@ -102,16 +119,38 @@ def main():
             (case_dir / "response.json").write_text(str(resp), encoding="utf-8")
 
             tex = ""
+            ocr_raw = ""
+            content_tex = ""
+            verbatim_metrics = {}
+
             if download_url:
                 zip_bytes = download_zip(download_url)
                 (case_dir / "out.zip").write_bytes(zip_bytes)
                 safe_unzip(zip_bytes, case_dir / "out")
+
                 tex = read_tex(case_dir / "out")
+                ocr_raw = read_ocr_raw(case_dir / "out")
+                content_tex = read_content_tex(case_dir / "out")
+
+                # Check verbatim accuracy (only if both ocr_raw and content exist)
+                if ocr_raw and content_tex:
+                    try:
+                        verbatim_metrics = compare_texts(ocr_raw, content_tex)
+                    except Exception as e:
+                        verbatim_metrics = {"error": str(e)}
 
             eqs = count_equations(tex)
             figs = count_figures(tex)
             elapsed = time.time() - t0
-            print(f"   → ok in {elapsed:.1f}s | eq={eqs} fig={figs} (backend figures={stats.get('figures','?')})")
+            verb_str = ""
+            if verbatim_metrics:
+                char_sim = verbatim_metrics.get("char_similarity", "?")
+                sent_sim = verbatim_metrics.get("sent_similarity", "?")
+                passed = verbatim_metrics.get("passed_overall", False)
+                status = "✓" if passed else "✗"
+                verb_str = f" | verbatim: {status} char={char_sim} sent={sent_sim}"
+
+            print(f"   → ok in {elapsed:.1f}s | eq={eqs} fig={figs}{verb_str}")
 
             rows.append({
                 "file": f.name,
@@ -123,6 +162,12 @@ def main():
                 "mode": stats.get("mode",""),
                 "editor_used": stats.get("editor_used",""),
                 "pdf_built": stats.get("pdf_built",""),
+                # NEW FIELDS:
+                "verbatim_char": verbatim_metrics.get("char_similarity", ""),
+                "verbatim_sent": verbatim_metrics.get("sent_similarity", ""),
+                "verbatim_passed": verbatim_metrics.get("passed_overall", ""),
+                "orig_chars": verbatim_metrics.get("original_chars", ""),
+                "out_chars": verbatim_metrics.get("output_chars", ""),
                 "result_dir": str(case_dir)
             })
         except Exception as e:
@@ -136,6 +181,11 @@ def main():
                 "mode": args.mode,
                 "editor_used": bool(args.editor),
                 "pdf_built": "",
+                "verbatim_char": "",
+                "verbatim_sent": "",
+                "verbatim_passed": "",
+                "orig_chars": "",
+                "out_chars": "",
                 "result_dir": str(case_dir),
                 "error": str(e)
             })
