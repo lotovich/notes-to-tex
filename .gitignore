@@ -242,3 +242,8 @@ golden/*
 !golden/.gitkeep
 results/*
 !results/.gitkeep
+
+AI_GUIDELINES.md
+architecture.md
+current_state.md
+future_plan.md
