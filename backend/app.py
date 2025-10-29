@@ -11,6 +11,7 @@ from backend.utils.postprocess import enforce_latex_conventions, fix_cyrillic_in
 from backend.utils.pdf import pdf_to_images
 from backend.utils.validators import run_validators, finalize_content
 from backend.utils.ocr_raw import make_ocr_baseline
+from backend.utils.auto_mode import classify_content_mode
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "latex"
@@ -516,7 +517,7 @@ def build_tex_from_blocks(data: dict) -> str:
 async def process(
     request: Request,
     file: UploadFile,
-    mode: str = Query("book", description='Output mode: "book" (enriched) or "strict" (verbatim)'),
+    mode: str = Query("auto", description='Output mode: "book" (enriched), "strict" (verbatim), or "auto" (detect automatically)'),
     use_editor: bool = Query(True, description="Second pass editor/cleanup"),
     compile_pdf: bool = Query(False, description="Try to compile PDF with latexmk if available")
 ):
@@ -539,6 +540,60 @@ async def process(
         # If OCR baseline fails - not critical, continue
         logger.warning(f"Failed to create OCR baseline: {e}")
         ocr_baseline_text = ""
+
+    # ========================================
+    # ЭТАП 2: AUTO-MODE CLASSIFICATION (NEW)
+    # ========================================
+
+    auto_mode_result = None
+    mode_source = "user"  # По умолчанию
+
+    if ocr_baseline_path.exists():
+        ocr_text = ocr_baseline_path.read_text(encoding='utf-8')
+
+        # Fallback: if OCR failed, extract text from meta.json
+        if (not ocr_text or
+            ocr_text.strip().startswith("# No text") or
+            ocr_text.strip().startswith("# Error") or
+            len(ocr_text.strip()) < 50):
+
+            logger.warning("ocr_raw.txt is empty/failed, extracting text from meta.json")
+            from backend.utils.auto_mode import extract_text_from_meta
+
+            # We need to get meta first, but it's not available yet at this point
+            # So we'll delay the classification until after compose_latex
+            auto_mode_result = None
+            mode_needs_classification = True
+        else:
+            # OCR text is available, proceed with normal classification
+            preliminary_meta = {
+                "language": "en",  # будет обновлено позже в compose_latex
+                "pages": 1
+            }
+            auto_mode_result = classify_content_mode(ocr_text, preliminary_meta)
+            mode_needs_classification = False
+
+        # Если пользователь НЕ указал режим явно → использовать auto
+        if mode == "auto":
+            if auto_mode_result:
+                mode = auto_mode_result["mode"]
+                mode_source = "auto"
+                logger.info(f"Auto-detected mode: {mode} (confidence: {auto_mode_result['confidence']})")
+            else:
+                # Delayed classification will happen after meta.json is created
+                mode_source = "auto"
+                mode = "book"  # Temporary fallback
+        else:
+            logger.info(f"User-specified mode: {mode}")
+            mode_needs_classification = False
+
+    else:
+        # Случай когда ocr_raw.txt не создан (некоторые тесты)
+        logger.warning("ocr_raw.txt not found, using provided mode or defaulting to 'book'")
+        if mode == "auto":
+            mode = "book"  # Безопасный fallback
+            mode_source = "fallback"
+        mode_needs_classification = False
 
     images = []
     if input_path.suffix.lower() == ".pdf":
@@ -617,13 +672,44 @@ async def process(
         except Exception:
             meta = {}
 
+    # Handle delayed classification if needed (when OCR failed but meta.json is now available)
+    # ONLY run delayed classification if we don't already have a result
+    if ('mode_needs_classification' in locals() and mode_needs_classification and
+        mode_source == "auto" and auto_mode_result is None):
+        from backend.utils.auto_mode import extract_text_from_meta
+        meta_text = extract_text_from_meta(meta)
+
+        if meta_text:
+            logger.info("Running delayed auto-mode classification using meta.json text")
+            auto_mode_result = classify_content_mode(meta_text, meta)
+            mode = auto_mode_result["mode"]
+            logger.info(f"Auto-detected mode (from meta.json): {mode} (confidence: {auto_mode_result['confidence']})")
+        else:
+            logger.warning("Both ocr_raw.txt and meta.json are empty, defaulting to book mode")
+            mode = "book"
+            mode_source = "fallback"
+            auto_mode_result = None
+
+    # Записываем результат auto-mode анализа в meta.json
+    if auto_mode_result:
+        meta["auto_mode_analysis"] = auto_mode_result
+    meta["mode_selected"] = mode
+    meta["mode_source"] = mode_source
+
+    # Сохраняем обновленный meta.json
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to update meta.json with auto-mode analysis: {e}")
+
     # Prefer rebuild from meta when structured PRIMARY JSON is available
     if isinstance(meta, dict) and isinstance(meta.get("blocks"), list) and meta["blocks"]:
         latex_body = build_tex_from_blocks(meta)
 
     # 5) optional editor pass (before validation, so we validate the final text)
     if use_editor:
-        latex_body = editor_review(latex_body, job_dir=job_dir)
+        latex_body = editor_review(latex_body, job_dir=job_dir, mode=mode)
 
     # ensure figures if none present
     latex_body = ensure_figure_blocks(latex_body, figures_info)

@@ -40,6 +40,8 @@ def _is_json_truncated(raw_text: str) -> bool:
 PROMPTS_DIR = (Path(__file__).resolve().parent / "prompts")
 COMPOSER_FILE = PROMPTS_DIR / "composer.md"
 EDITOR_FILE   = PROMPTS_DIR / "editor.md"
+COMPOSER_STRICT_FILE = PROMPTS_DIR / "composer_strict.md"
+EDITOR_STRICT_FILE   = PROMPTS_DIR / "editor_strict.md"
 
 # Вырезаем содержимое из ```latex ... ``` или ```tex ... ```
 _CODE_FENCE = re.compile(r"```\s*(.*?)```", re.S | re.I)
@@ -292,7 +294,11 @@ def compose_latex(
     Собирает content.tex из текстовых блоков и (реально прикреплённых) изображений.
     figures — метаданные для подписи/размера; images — пути к PNG/JPG (страницы сканов и т.п.).
     """
-    system = _read(COMPOSER_FILE)
+    # Select prompt based on mode
+    if mode == "strict":
+        system = _read(COMPOSER_STRICT_FILE) if COMPOSER_STRICT_FILE.exists() else _read(COMPOSER_FILE)
+    else:
+        system = _read(COMPOSER_FILE)
 
     # Жёстко подсвечиваем "полный конспект"
     system += (
@@ -458,14 +464,18 @@ def compose_latex(
 
     return body
 
-def editor_review(latex_body: str, job_dir: Optional[Path] = None) -> str:
+def editor_review(latex_body: str, job_dir: Optional[Path] = None, mode: str = "book") -> str:
     """
     Второй проход: вычитка/исправления. Возвращает исправленное тело, но не деградирует контент.
     """
     baseline_insufficient = _body_insufficient(latex_body)
     baseline_lang = _language_hint(latex_body)
 
-    system = _read(EDITOR_FILE)
+    # Select prompt based on mode
+    if mode == "strict":
+        system = _read(EDITOR_STRICT_FILE) if EDITOR_STRICT_FILE.exists() else _read(EDITOR_FILE)
+    else:
+        system = _read(EDITOR_FILE)
     client = _client()
     cfg = genai_types.GenerateContentConfig(
         temperature=0.2,

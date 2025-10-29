@@ -92,7 +92,7 @@ def main():
     ap.add_argument("--input", required=True, help="folder with pdf/jpg/jpeg/png")
     ap.add_argument("--out", default="./results", help="output folder")
     ap.add_argument("--url", default="http://localhost:8000/process", help="backend /process URL")
-    ap.add_argument("--mode", default="book", choices=["book","strict"], help="LLM output mode")
+    ap.add_argument("--mode", default="auto", choices=["book","strict","auto"], help="LLM output mode")
     ap.add_argument("--editor", type=int, default=1, help="use editor pass (1/0)")
     ap.add_argument("--compile", type=int, default=0, help="backend compile PDF via latexmk (1/0)")
     args = ap.parse_args()
