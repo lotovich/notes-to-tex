@@ -297,7 +297,7 @@ def compose_latex(
     # Select prompt based on mode
     if mode == "strict":
         system = _read(COMPOSER_STRICT_FILE) if COMPOSER_STRICT_FILE.exists() else _read(COMPOSER_FILE)
-    else:
+    elif mode == "book":
         system = _read(COMPOSER_FILE)
 
     # Жёстко подсвечиваем "полный конспект"
@@ -474,7 +474,7 @@ def editor_review(latex_body: str, job_dir: Optional[Path] = None, mode: str = "
     # Select prompt based on mode
     if mode == "strict":
         system = _read(EDITOR_STRICT_FILE) if EDITOR_STRICT_FILE.exists() else _read(EDITOR_FILE)
-    else:
+    elif mode == "book":
         system = _read(EDITOR_FILE)
     client = _client()
     cfg = genai_types.GenerateContentConfig(

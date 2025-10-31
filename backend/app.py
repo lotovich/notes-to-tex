@@ -7,11 +7,13 @@ import fitz  # PyMuPDF
 import json
 
 from backend.gemini_client import compose_latex, editor_review
-from backend.utils.postprocess import enforce_latex_conventions, fix_cyrillic_in_math, fix_dano_environment
+from backend.utils.postprocess import enforce_latex_conventions, fix_cyrillic_in_math, fix_dano_environment, sanitize_box_labels
 from backend.utils.pdf import pdf_to_images
 from backend.utils.validators import run_validators, finalize_content
 from backend.utils.ocr_raw import make_ocr_baseline
 from backend.utils.auto_mode import classify_content_mode
+from datetime import datetime
+from backend.utils.verbatim_checker import compare_texts
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "latex"
@@ -720,6 +722,7 @@ async def process(
     # финальные фиксы перед записью
     latex_body = fix_cyrillic_in_math(latex_body)
     latex_body = fix_dano_environment(latex_body)
+    latex_body = sanitize_box_labels(latex_body)
 
     # --- SAFETY: JSON → TeX, если вдруг сюда дошла JSON-строка ---
     def _looks_like_json_blob(txt: str) -> bool:
@@ -748,6 +751,49 @@ async def process(
     # Очистить от validator hints
     latex_body = finalize_content(latex_body)
     (job_dir / "content.tex").write_text(latex_body, encoding="utf-8")
+
+    # 6.5) Fidelity Guard - verbatim accuracy check (only for strict mode)
+    fidelity_report = None
+    if mode == "strict":
+        ocr_baseline_path = job_dir / "ocr_raw.txt"
+        if ocr_baseline_path.exists():
+            try:
+                ocr_raw = ocr_baseline_path.read_text(encoding="utf-8")
+                fidelity_report = compare_texts(ocr_raw, latex_body)
+
+                if not fidelity_report["passed_overall"]:
+                    logger.warning(
+                        f"⚠️  Fidelity check failed: "
+                        f"char={fidelity_report['char_similarity']:.2%} (need ≥98%), "
+                        f"sent={fidelity_report['sent_similarity']:.2%} (need ≥95%)"
+                    )
+                else:
+                    logger.info(
+                        f"✅ Fidelity check passed: "
+                        f"char={fidelity_report['char_similarity']:.2%}, "
+                        f"sent={fidelity_report['sent_similarity']:.2%}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to run fidelity check: {e}")
+                fidelity_report = {"error": str(e)}
+
+    # Create validation report
+    validation_report = {
+        "mode": mode,
+        "timestamp": datetime.now().isoformat(),
+        "fidelity_check": fidelity_report,
+        "validators": val_report  # from line 720
+    }
+
+    validation_path = job_dir / "validation_report.json"
+    try:
+        validation_path.write_text(
+            json.dumps(validation_report, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        logger.info(f"Validation report saved to {validation_path.name}")
+    except Exception as e:
+        logger.warning(f"Failed to save validation report: {e}")
 
     # 7) copy templates
     src_main = TEMPLATES_DIR / "main-template.tex"

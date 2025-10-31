@@ -211,3 +211,64 @@ def fix_dano_environment(latex: str) -> str:
     )
 
     return latex
+
+
+def sanitize_box_labels(latex: str) -> str:
+    """
+    Remove math mode and complex LaTeX from the second argument of box environments.
+
+    Box environments (examplebox, theorembox, etc.) use \\newtcbtheorem which requires
+    two arguments: {title}{label}. The label argument CANNOT contain math mode ($...$),
+    complex commands, or environments like \\begin{cases}.
+
+    This function replaces any problematic second argument with an empty {}.
+
+    Examples:
+        \\begin{examplebox}{Title}{$x^2$} -> \\begin{examplebox}{Title}{}
+        \\begin{examplebox}{Title}{simple} -> unchanged (if no $ or \\)
+    """
+    # List of box environments that need sanitization
+    box_envs = [
+        "examplebox", "theorembox", "theoremnox", "definitionbox",
+        "lemmabox", "lemmanox", "corollarybox", "notebox", "questionbox"
+    ]
+
+    for env in box_envs:
+        # Pattern: \begin{env}{arg1}{arg2}
+        # Match the environment with both arguments (handle nested braces)
+        pattern = rf'(\\begin\{{{env}\}}\{{(?:[^{{}}]|\{{[^}}]*\}})*\}})\{{((?:[^{{}}]|\{{[^}}]*\}})*)\}}'
+
+        def replace_if_problematic(match):
+            prefix = match.group(1)  # \begin{env}{title}
+            label = match.group(2)    # second argument (label)
+
+            # Check if label contains problematic content
+            # Empty labels are OK, we only fix non-empty problematic ones
+            if not label.strip():
+                return match.group(0)  # keep empty labels as-is
+
+            problematic = any([
+                '$' in label,
+                '\\begin{' in label or '\\begin ' in label,
+                '\\left' in label or '\\right' in label,
+                '\\frac' in label,
+                '\\mathcal' in label or '\\mathrm' in label or '\\mathbb' in label,
+                '\\text{' in label or '\\text ' in label,
+                '\\sin' in label or '\\cos' in label or '\\tan' in label,
+                '\\sum' in label or '\\int' in label or '\\prod' in label,
+                '\\alpha' in label or '\\beta' in label or '\\gamma' in label,
+                '\\Delta' in label or '\\Sigma' in label,
+                '\\limits' in label or '\\displaystyle' in label,
+                '\\cdot' in label or '\\times' in label,
+                '\\le' in label or '\\ge' in label or '\\ne' in label,
+                '\\to' in label or '\\rightarrow' in label or '\\leftarrow' in label
+            ])
+
+            if problematic:
+                return prefix + '{}'  # replace problematic label with empty
+            else:
+                return match.group(0)  # keep simple text labels
+
+        latex = re.sub(pattern, replace_if_problematic, latex)
+
+    return latex

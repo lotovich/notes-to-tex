@@ -144,8 +144,11 @@ YOUR ROLE: LaTeX beautifier, NOT content rewriter.
 - Theorem-like boxes must be the project ones:
   `definitionbox`, `theoremnox`, `lemmanox`, `corollarybox`, `examplebox`, `notebox`, `questionbox`.
 - Ensure **two pairs of braces** after `\begin{...}` (`{}{}` if no title).
+- **CRITICAL:** The second argument {label} must be EMPTY {} or contain only simple text (no $, no \begin, no \mathcal, etc.). Never put formulas in the label!
+  - ❌ WRONG: `\begin{example}{Title}{$x^2+y^2$}`
+  - ✅ CORRECT: `\begin{example}{Title}{}`
 - Do **not** inject `\label{...}` unless present in the source.
-- Wrap conditions like “Дано:” into `\begin{example}[Дано]...\end{example}` if appropriate.
+- Wrap conditions like "Дано:" into `\begin{example}[Дано]...\end{example}` if appropriate.
 
 ## LISTS
 - Convert ad-hoc enumerations to `\begin{enumerate}...\end{enumerate}` or `itemize` where appropriate.
